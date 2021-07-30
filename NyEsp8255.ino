@@ -74,7 +74,8 @@ float kurs,kursRaw,roll,rollRaw,pitch,pitchRaw = 0.0;
 float K = 0.99;
 float MISVISNING = 3.75;
 float kursGyroStabiliseret;
-uint8_t systemC, gyroC, accelC, magC = 0;
+// uint8_t systemC, gyroC, accelC, magC = 0;
+int kalibVal = 0;
 float bnoData[10];
 float lg[]={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0} ;
 float br[]={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0} ;
@@ -167,22 +168,33 @@ void loop()
 
 void initBNO055(Adafruit_BNO055 bno){
 	/* Initialise the sensor */
-	delay(1000);
-	if (!bno.begin()){
-
-		Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+	int i_nr = 0;
+	while (i_nr<10)
+	{
 		delay(1000);
-		ESP. restart();
+		if (!bno.begin()){
+			Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR! ");
+			Serial.print(9-i);
+			Serial.println(" forsøg tilbage");
+			i_nr++;
 	//  while (1);
+		}else
+		{
+			Serial.print("Succesfuld forbindelse til BNO055");
+			delay(1000);
+			bno.setExtCrystalUse(true); /* Bruger microprocessorens  clock */ 
+			i_nr = 10;
+		}
 	}
-	Serial.print("Succesfuld forbindelse til BNO055");
-	delay(1000);
-	bno.setExtCrystalUse(true); /* Bruger microprocessorens  clock */ 
 }
 
 bool getBNO055val(){
 		/* Get a new sensor vector*/
-		if( (millis()-t0) < BNO055_SAMPLERATE_DELAY_MS)return false;
+		if( (millis()-t0) < BNO055_SAMPLERATE_DELAY_MS){
+			// delay(5);
+			return false;
+		}
+		
 
 		imu::Vector<3> g = bno.getVector( Adafruit_BNO055::VECTOR_GYROSCOPE);
 		imu::Vector<3> m = bno.getVector( Adafruit_BNO055::VECTOR_MAGNETOMETER);
@@ -221,7 +233,7 @@ bool getBNO055val(){
 		float RollRaw = atan2(ay,az); //rollRaw i radianer
 		rollRaw = RollRaw*180/PI;
 		pitchRaw = atan2(-ax,(ay*sin(RollRaw)+az*cos(RollRaw)))*180/PI; 
-		kursRaw = atan2(-my,mx)*180/PI - MISVISNING;
+		kursRaw = atan2(-my,mx)*180/PI;
 
 		//Comperatorfilter på roll, og pitch, 99% gyro, 1% acc
 		float k=0.99;//procent gyro
@@ -257,12 +269,16 @@ bool getBNO055val(){
 						kursGyroStabiliseret = kursGyroStabiliseret +360.0;
 				}
 		}
-		kurs = (K*gyrokurs + (1-K)*kursGyroStabiliseret);
+		kurs = (K*(gyrokurs) + (1-K)*kursGyroStabiliseret);
 
-		
+		 uint8_t systemC, gyroC, accelC, magC = 0;
 		//Auto kalibreringens status: (integer) 0=lavest niveau (forkast data), 3=højste niveau (fuldt kalibreret data)
-		bno.getCalibration(&systemC, &gyroC, &accelC, &magC);
-
+		//bno.getCalibration(&systemC, &gyroC, &accelC, &magC);
+	
+		kalibVal = 0000;//1000 + gyroC/1.0*1000  + accelC/1.0*100 + magC/1.0*10 + systemC/1.0;
+		
+		
+		
 		
 		//KUN HVIS GPS SIGNALER
 		if(brGps>0){ 
@@ -290,26 +306,29 @@ bool getBNO055val(){
 						Serial.print(" , udlaeg: ");  Serial.println(udlg);
 						analogWrite(RORpwm,udlg);
 						analogWrite(RORpwm1,udlg);
-			
 				}
 		}
 
-	//delay(BNO055_SAMPLERATE_DELAY_MS);
+
 	return true;
 
 }
 void sendBNOdata(){
+
 		String str = "bno,";
-		str += kurs; str += ",";//0
+		str += kurs + MISVISNING/1.0 ; str += ",";//0
 		str += roll;str += ",";//1
 		str += pitch; str += ",";//2
 		str += String(dt,3); str += ",";//3
-		str += gyroC*1000+accelC*100+magC*10+systemC; str += ",";//4
-		str += String(kursRaw,1); str += ",";//5
-		str += kursGyroStabiliseret; str += ",";//6
+		str += String(kalibVal); str += ",";//gyroC*1000+accelC*100+magC*10+systemC; str += ",";//4
+		str += String(kursRaw + MISVISNING/1.0,1); str += ",";//5
+		str += kursGyroStabiliseret + MISVISNING/1.0; str += ",";//6
 		str += sp_kurs; str += ",";//7
 		str += ror; //8
+		// Serial.println( str);
+
 		client.send( str);
+
 }
 ////////////////////// GPS ////////////////////////////////
 void sendGPSdata(TinyGPSPlus gps){
@@ -375,13 +394,12 @@ void onMessageCallback(WebsocketsMessage message)
 {
 	String besked = message.data();
 	
-	int r=0; //besked nr
-	// int nr = 0;
+	int r = 0; //besked nr
 	bool nyPos=false;
 
 	int delay_val;
-	float lg_wp, br_wp;
-	float k_value = 0;
+	float lg_wp, br_wp;// bruges i case a
+	float k_value = 0; // bruges i case c
 	float misvisning = 3.75; //Default Marstal: https://www.magnetic-declination.com/
 
 	char nr = besked.charAt(0);
@@ -402,12 +420,17 @@ void onMessageCallback(WebsocketsMessage message)
     {
         case 'a':  //waypoint
 
-           	for(int i=1;i<besked.length();i++){
+           	for(int i=0;i<besked.length();i++){
 				if(besked[i] == ':'){ midt = i;}
 				if(besked[i] == ','){
-					br[pos_nr] = besked.substring(startnr,midt-startnr).toFloat();
-					lg[pos_nr] = besked.substring(midt + 1,i-(midt+1)).toFloat();
-					Serial.printf("way points: br:%8.5f lg:%8.5f",br[pos_nr],lg[pos_nr]);
+					br[pos_nr] = besked.substring(startnr,midt).toFloat();
+					lg[pos_nr] = besked.substring(midt + 1,i+1).toFloat();
+					// Serial.print("startnr:");Serial.println(startnr);
+					// Serial.print("midt:");Serial.println(midt);
+					// Serial.print("i:");Serial.println(i);
+					Serial.printf("way points: br:%f lg:%f",br[pos_nr],lg[pos_nr]);
+					// Serial.print("pos_nr");Serial.println(pos_nr);
+					// Serial.println("   ***");
 					pos_nr++;
 					startnr = i+1;
 				}
@@ -415,6 +438,7 @@ void onMessageCallback(WebsocketsMessage message)
 			while (pos_nr<10){ //fjerner evt. gamle wp - hvis rettet
 				br[pos_nr] = -1.0;
 				lg[pos_nr] = -1.0;
+				pos_nr++;
 			}
            break;
         case 'b'://rate
@@ -435,10 +459,8 @@ void onMessageCallback(WebsocketsMessage message)
 			break;  
 		case 'd'://K-val
 			misvisning = besked.substring(1,besked.length()).toFloat();
-			if(misvisning<0.0 ) break;
-			if(misvisning>180) break;
-			MISVISNING = misvisning;
-			Serial.print("Misvisning: ");Serial.println(MISVISNING);
+			MISVISNING = misvisning/1.0 -100.0;
+			Serial.print("Misvisning: ");Serial.println(MISVISNING/1.0);
 			break;  
     }
 	
